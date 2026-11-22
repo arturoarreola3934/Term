@@ -12,27 +12,71 @@ Correr (desde la carpeta raíz del repo):
 Detener: Ctrl+C en la terminal y luego el botón EN (o RST) de la tarjeta.
 """
 
+from datetime import datetime
 import time
+import numpy as np
+import pandas as pd
+import serial
+
+# Configura el puerto serial (cambia 'COM3' por tu puerto correspondiente)
+puerto_serial = serial.Serial('COM3', 115200)
+registros = []
+
+
+def calcular_temperatura(adc_val):
+  # Parámetros simulados de Steinhart-Hart para un termistor NTC típico de 10k
+  if adc_val == 0:
+    return 0
+  # Convertir ADC a resistencia (asumiendo 3.3V y R_fija = 10k)
+  V_out = (adc_val / 4095.0) * 3.3
+  if 3.3 - V_out == 0:
+    return 0
+  R_ntc = 10000.0 * (V_out / (3.3 - V_out))
+
+  # Ecuación simplificada de Steinhart-Hart
+  logR = np.log(R_ntc)
+  A, B, C = 1.009249522e-03, 2.378405444e-04, 2.019202697e-07
+  tKelvin = 1.0 / (A + B * logR + C * (logR**3))
+  tCelsius = tKelvin - 273.15
+  return tCelsius
+
+
+print('Iniciando registro de temperatura...')
+inicio_minuto = time.time()
 
 try:
-    from machine import Pin
-except ImportError:  # estás en tu compu, no en la ESP32
-    raise SystemExit("Este script corre EN la ESP32. Usa:\n"
-                     "  uv run mpremote run 01_led_parpadeo/parpadeo.py")
+  while True:
+    if puerto_serial.in_waiting > 0:
+      linea = puerto_serial.readline().decode('utf-8').strip()
+      if linea.isdigit():
+        adc_val = int(linea)
+        temp_c = calcular_temperatura(adc_val)
 
-PIN_LED = 23          # LED externo en la protoboard
-PIN_LED_PLACA = 2     # LED azul que trae la mayoría de las DevKit
-ESPERA = 0.5          # segundos encendido y segundos apagado
+        # Verificar si hay estado de fiebre (ej. mayor a 37.5 °C)
+        tiene_fiebre = temp_c >= 37.5
 
-led = Pin(PIN_LED, Pin.OUT)
-led_placa = Pin(PIN_LED_PLACA, Pin.OUT)
+        # Imprimir lectura actual
+        print(
+            f'Temp: {temp_c:.2f} °C | Fiebre: {"SÍ" if tiene_fiebre else "NO"}'
+        )
 
-print("Parpadeando en GPIO", PIN_LED, "(Ctrl+C para salir)")
+        # Registrar cada 60 segundos en el DataFrame de Pandas
+        if time.time() - inicio_minuto >= 60:
+          nuevo_registro = {
+              'Timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+              'Temperatura (°C)': round(temp_c, 2),
+              'Fiebre': 'Sí' if tiene_fiebre else 'No',
+          }
+          registros.append(nuevo_registro)
+          df = pd.DataFrame(registros)
+          print('\n--- Tabla de Registro Actualizada (Pandas) ---')
+          print(df)
+          print('--------------------------------------------\n')
+          inicio_minuto = time.time()
 
-while True:
-    led.on()
-    led_placa.on()
-    time.sleep(ESPERA)
+except KeyboardInterrupt:
+  puerto_serial.close()
+  print('Registro finalizado.')
 
     led.off()
     led_placa.off()
